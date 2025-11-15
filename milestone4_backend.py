@@ -317,5 +317,8 @@ def test_logging_written(client):
 
 # ------------------ Run Backend ------------------
 if __name__ == "__main__":
-    print("Starting backend on http://127.0.0.1:5000")
-    app.run(debug=True)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Starting backend on port {port}")
+    app.run(host="0.0.0.0", port=port)
+
