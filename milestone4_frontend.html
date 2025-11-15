@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartTel Voice IVR</title>
+<style>
+body { font-family: 'Segoe UI', sans-serif; background: #fff; color: #002f38; display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin:0; padding:0;}
+header {width:100%; background: linear-gradient(90deg,#0288d1,#03a9f4); color:#fff; text-align:center; padding:20px 0; box-shadow:0 4px 10px rgba(0,0,0,0.2);}
+header h1 {margin:0; font-size:2.5rem; letter-spacing:1px; animation:fadeInDown 1s ease-in-out;}
+#startBtn {margin-top:30px; padding:20px 50px; font-size:20px; font-weight:bold; border:none; border-radius:10px; background: linear-gradient(90deg,#0288d1,#03a9f4); color:white; cursor:pointer; transition:0.3s all; box-shadow:0 8px 20px rgba(0,0,0,0.3);}
+#startBtn:hover {transform:translateY(-3px); box-shadow:0 12px 25px rgba(0,0,0,0.35);}
+#startBtn:disabled {background:#90caf9; cursor:not-allowed;}
+#log {margin-top:30px; width:90%; max-width:700px; background:#f1f9ff; padding:20px; border-radius:15px; overflow-y:auto; max-height:400px; box-shadow:0 6px 15px rgba(0,0,0,0.1);}
+.log-entry {margin-bottom:12px; padding:10px 15px; border-radius:12px; font-size:16px; line-height:1.4; word-wrap:break-word; opacity:0; animation:fadeInUp 0.5s forwards;}
+.bot {background:#0288d1;color:white;text-align:left;}
+.user {background:#e0f7fa;color:#002f38;text-align:right;}
+.menu-item {padding:10px; margin:5px 0; border-radius:8px; background:#90caf9; color:#002f38; font-weight:bold; text-align:center; animation:fadeInUp 0.5s forwards;}
+.menu-item.active {background:#0288d1; color:white;}
+@keyframes fadeInDown {from{opacity:0;transform:translateY(-10px);}to{opacity:1;transform:translateY(0);}}
+@keyframes fadeInUp {from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+</style>
+</head>
+<body>
+<header><h1>SmartTel Voice IVR</h1></header>
+<button id="startBtn">🎤 Start Voice IVR</button>
+<div id="log"></div>
+
+<script>
+const logDiv = document.getElementById("log");
+const startBtn = document.getElementById("startBtn");
+let voices = [];
+let voicesLoaded = false;
+
+// Load voices on page load
+window.speechSynthesis.onvoiceschanged = () => {
+    voices = speechSynthesis.getVoices();
+    voicesLoaded = true;
+    console.log("Voices loaded:", voices.length);
+};
+
+// Force load voices if not ready
+function ensureVoices() {
+    if (!voicesLoaded) {
+        speechSynthesis.getVoices();  // Trigger load
+        setTimeout(() => { voices = speechSynthesis.getVoices(); voicesLoaded = true; }, 1000);
+    }
+}
+
+// ----------------- Logging -----------------
+function log(text, type="bot") {
+    const e = document.createElement("div");
+    e.className = `log-entry ${type}`;
+    e.textContent = text;
+    logDiv.appendChild(e);
+    logDiv.scrollTop = logDiv.scrollHeight;
+    console.log(type.toUpperCase() + ": " + text);
+}
+
+// ----------------- TTS -----------------
+async function speak(text) {
+    ensureVoices();  // Ensure voices are ready
+    return new Promise((resolve) => {
+        try {
+            if (!('speechSynthesis' in window) || !voicesLoaded || voices.length === 0) {
+                console.warn("TTS not ready");
+                log("Voice not ready. " + text, "bot");
+                alert("Voice not ready. Continuing with text.");
+                resolve();
+                return;
+            }
+            const u = new SpeechSynthesisUtterance(text);
+            let selectedVoice = voices.find(v => v.lang === 'en-IN') || voices.find(v => v.lang.startsWith('en'));
+            if (selectedVoice) u.voice = selectedVoice;
+            u.lang = selectedVoice ? selectedVoice.lang : 'en-US';
+            u.rate = 1;
+            u.onend = () => resolve();
+            u.onerror = (err) => {
+                console.error("TTS Error:", err);
+                log("Voice error. " + text, "bot");
+                alert("Voice error. Continuing.");
+                resolve();
+            };
+            speechSynthesis.speak(u);
+            log(text, "bot");
+        } catch (err) {
+            console.error("TTS Speak Error:", err);
+            log("Voice failed. " + text, "bot");
+            alert("Voice failed. Continuing.");
+            resolve();
+        }
+    });
+}
+
+// ----------------- Safe STT -----------------
+// ----------------- Safe STT (Improved Version) -----------------
+async function safeListen(prompt = "") {
+    if (prompt) await speak(prompt);
+
+    return new Promise(async (resolve) => {
+        try {
+            // Ask microphone permission
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
+
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) {
+                log("Speech recognition not supported.", "bot");
+                alert("Speech recognition not supported.");
+                resolve("");
+                return;
+            }
+
+            const r = new SR();
+            r.lang = "en-IN";
+            r.interimResults = false;
+            r.maxAlternatives = 1;
+
+            let heard = false;
+            let finished = false;
+
+            function safeResolve(val) {
+                if (finished) return;
+                finished = true;
+                try { r.stop(); } catch {}
+                try { r.abort(); } catch {}
+                resolve(val);
+            }
+
+            r.onresult = (event) => {
+                heard = true;
+                const text = event.results[0][0].transcript.toLowerCase().trim();
+                log(text || "(no speech)", "user");
+                safeResolve(text);
+            };
+
+            r.onerror = (err) => {
+                console.error("STT Error:", err);
+                safeResolve("");
+            };
+
+            r.onend = () => {
+                if (!heard && !finished) {
+                    // No speech detected — retry prompt
+                    log("No speech detected.", "bot");
+                    safeResolve("");
+                }
+            };
+
+            // Start recognition
+            try { r.start(); } catch (e) {}
+
+            // Wait up to 15 seconds
+            setTimeout(() => {
+                if (!heard && !finished) {
+                    log("Timeout reached.", "bot");
+                    safeResolve("");
+                }
+            }, 15000);
+
+        } catch (err) {
+            console.error("STT Setup Error:", err);
+            resolve("");
+        }
+    }).then(async (text) => {
+        // Auto retry once
+        if (!text) {
+            await speak("Sorry, I didn't catch that. Please repeat.");
+            return await safeListen("");
+        }
+        return text;
+    });
+}
+
+
+// ----------------- Backend Call -----------------
+async function callBackend(endpoint, data = {}) {
+    try {
+        const res = await fetch(`http://127.0.0.1:5000/${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        return await res.json();
+    } catch (err) {
+        console.error("Backend Error:", err);
+        log("Backend error.", "bot");
+        alert("Backend error. Check connection.");
+        return null;
+    }
+}
+
+
+// ----------------- Show Customer Support Menu -----------------
+async function showCustomerSupportMenu() {
+    const items = [
+        "Network issue", 
+        "SIM/Activation issue", 
+        "Recharge/Payment issue", 
+        "Billing/Plan issue", 
+        "App/Login/Device issue", 
+        "Other issue"
+    ];
+    for (let item of items) {
+        const div = document.createElement("div");
+        div.className = "menu-item";
+        div.textContent = item;
+        logDiv.appendChild(div);
+        logDiv.scrollTop = logDiv.scrollHeight;
+        await speak(item);
+    }
+}
+// ----------------- Show Main Menu -----------------
+async function showMenu() {
+    const items = [
+        "Check balance",
+        "Plan details",
+        "Latest offers",
+        "Data upgrade",
+        "Recharge",
+        "Talk to customer care"
+    ];
+    for (let item of items) {
+        const div = document.createElement("div");
+        div.className = "menu-item";
+        div.textContent = item;
+        logDiv.appendChild(div);
+        logDiv.scrollTop = logDiv.scrollHeight;
+        await speak(item);
+    }
+}
+
+
+// ----------------- Handle Intent -----------------
+async function handleIntent(cid, text) {
+    text = text.toLowerCase();
+    let res = null;
+    try {
+        if (text.includes("balance")) res = await callBackend("intent", { id: cid, text: "balance" });
+        else if (text.includes("plan")) res = await callBackend("intent", { id: cid, text: "plan" });
+        else if (text.includes("offer")) res = await callBackend("intent", { id: cid, text: "offer" });
+        else if (text.includes("data") || text.includes("upgrade")) res = await callBackend("intent", { id: cid, text: "data", upgrade: true });
+        else if (text.includes("recharge") || text.includes("payment") || text.includes("wallet")) res = await callBackend("intent", { id: cid, text: "recharge" });
+        else if (text.includes("network") || text.includes("signal") || text.includes("internet") ||
+                 text.includes("sim") || text.includes("activation") ||
+                 text.includes("bill") || text.includes("plan") ||
+                 text.includes("app") || text.includes("login") || text.includes("device") ||
+                 text.includes("customer") || text.includes("care") || text.includes("other")) {
+            res = await callBackend("intent", { id: cid, text: text });
+        }
+        else if (text.includes("menu") || text.includes("main menu")) {
+        res = await callBackend("intent", { id: cid, text: "menu" });
+        }
+
+        else if (text.includes("exit") || text.includes("bye" || text.includes("thank you"))) {
+            await speak("Thank you for using SmartTel IVR. Goodbye!");
+            return false;
+        } 
+        
+        
+        else {
+            await speak("Sorry, I didn't understand that. Could you please repeat?");
+            return true;
+        }
+
+        if (res && res.message) await speak(res.message);
+        return true;
+    } catch (err) {
+        console.error("Intent Error:", err);
+        log("Error processing intent.", "bot");
+        await speak("Unexpected error occurred. Please try again.");
+        return true;
+    }
+}
+
+
+// ----------------- Main Flow -----------------
+async function mainFlow() {
+    try {
+        startBtn.disabled = true;
+        log("Starting IVR session.", "bot");
+        await speak("Welcome to SmartTel Voice IVR.");
+
+        // ---------------- Ask Customer ID ----------------
+        let cid = "";
+        let retries = 0;
+        while (!cid && retries < 3) {
+            cid = await safeListen("Please say your customer ID.");
+            cid = cid.replace(/\s/g, "");
+            retries++;
+        }
+        if (!cid) {
+            log("Unable to capture customer ID.", "bot");
+            await speak("We could not capture your ID. Please try again later.");
+            startBtn.disabled = false;
+            return;
+        }
+
+        // ---------------- Fetch Customer ----------------
+        let custRes = await callBackend("fetch_customer", { id: cid });
+        
+        // ---------------- Registration Flow ----------------
+        if (!custRes || custRes.status === "not_found") {
+            let ans = await safeListen(`Customer ID ${cid} not found. Would you like to register?`);
+            if (ans.includes("yes")) {
+                let name = "";
+                retries = 0;
+                while (!name && retries < 3) {
+                    name = await safeListen("Please say your name.");
+                    name = name.trim();
+                    retries++;
+                }
+                if (!name) {
+                    log("Unable to capture name.", "bot");
+                    await speak("We could not capture your name. Please try again later.");
+                    startBtn.disabled = false;
+                    return;
+                }
+
+                // Capitalize name properly
+                name = name.split(" ").map(w => w[0].toUpperCase() + w.slice(1)).join(" ");
+
+                // Register user
+                let regRes = await callBackend("register", { id: cid, name: name });
+                if (!regRes || regRes.status !== "ok") {
+                    log("Registration failed.", "bot");
+                    await speak("Registration failed. Please try again.");
+                    startBtn.disabled = false;
+                    return;
+                }
+
+                // Use the registered data directly
+                custRes = {
+                    status: "ok",
+                    customer: {
+                        id: cid,
+                        name: name,
+                        plan: "SmartPlan 299",
+                        balance: 150.0,
+                        phone: "9999999999",
+                        data_left: "1.5 GB"
+                    }
+                };
+
+                log(`Registration successful. Welcome ${name}!`, "bot");
+                await speak(`Registration successful. Welcome ${name}!`);
+
+                // --- FIX: Reset speech engines after registration ---
+                await new Promise(r => setTimeout(r, 1200));  // allow mic + TTS reset
+                speechSynthesis.cancel(); // clear queued voices
+                console.log("Speech engines reset.");
+
+                // --- EXTRA FIX ---
+                let initialChoice = await safeListen("Do you want to access the main menu or talk to customer care?");
+                initialChoice = initialChoice || "";  // prevents null crash
+
+            } else {
+                log("Registration declined.", "bot");
+                await speak("Okay, please register later. Goodbye.");
+                startBtn.disabled = false;
+                return;
+            }
+        } else {
+            log(`Welcome back ${custRes.customer.name}!`, "bot");
+            await speak(`Welcome back ${custRes.customer.name}!`);
+        }
+
+        const cidActive = custRes.customer.id;
+
+        // ---------------- Initial Choice ----------------
+        let initialChoice = await safeListen("Do you want to access the main menu or talk to customer care?");
+        if (initialChoice.includes("menu"))
+         {
+            await showMenu();
+            let firstIntent = await safeListen("Please choose an option from the menu.");
+            if(firstIntent) await handleIntent(cidActive, firstIntent);
+        } 
+        else if (initialChoice.includes("customer") || initialChoice.includes("care"))
+         {
+            await showCustomerSupportMenu();
+            let issue = await safeListen("Please describe your issue.");
+            if(issue) await handleIntent(cidActive, issue);
+        } 
+        else
+        {
+           await handleIntent(cidActive, initialChoice);
+         }
+
+
+        // ---------------- Conversational Loop ----------------
+        let continueSession = true;
+        let queryCount = 0;
+        while (continueSession && queryCount < 10) {
+            queryCount++;
+            let userInput = await safeListen("What else can I help with?");
+            continueSession = await handleIntent(cidActive, userInput);
+        }
+
+        if (queryCount >= 10) {
+            log("Session ended due to limit.", "bot");
+            await speak("Session ended due to maximum interactions.");
+        }
+
+        log("Session ended.", "bot");
+        startBtn.disabled = false;
+
+    } catch (err) {
+        console.error("MainFlow Error:", err);
+        log("Unexpected error.", "bot");
+        await speak("A critical error occurred. Please refresh the page.");
+        startBtn.disabled = false;
+    }
+}
+
+
+// ----------------- Start Button -----------------
+startBtn.addEventListener("click", () => {
+    startBtn.disabled = true;
+    mainFlow();
+});
+</script>
