@@ -1,0 +1,5 @@
+Flask==2.3.2
+flask-cors==3.1.1
+speechrecognition==3.8.1
+pyttsx3==2.90
+gunicorn
